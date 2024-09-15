@@ -1,0 +1,134 @@
+import os
+import sys
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QTextEdit, QFileDialog, QProgressBar
+from PyQt6.QtCore import QThread, pyqtSignal
+
+class ConversionWorker(QThread):
+    updateProgress = pyqtSignal(int)
+    conversionComplete = pyqtSignal()
+
+    def __init__(self, converter, inputFolder, outputFolder):
+        super().__init__()
+        self.converter = converter
+        self.inputFolder = inputFolder
+        self.outputFolder = outputFolder
+
+    def run(self):
+        self.converter.convertPlaylist(self.inputFolder, self.outputFolder, self.updateProgress)
+        self.conversionComplete.emit()
+
+class OpusToMp3Converter:
+    def __init__(self):
+        self.totalFiles = 0
+        self.convertedFiles = 0
+
+    def convertOpusToMp3(self, inputFile, outputFile):
+        try:
+            subprocess.run(['ffmpeg', '-i', inputFile, '-acodec', 'libmp3lame', '-b:a', '320k', outputFile], check=True, capture_output=True, text=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def convertPlaylist(self, inputFolder, outputFolder, progressCallback):
+        if not os.path.exists(outputFolder):
+            os.makedirs(outputFolder)
+
+        opusFiles = [f for f in os.listdir(inputFolder) if f.endswith('.opus')]
+        self.totalFiles = len(opusFiles)
+        self.convertedFiles = 0
+
+        with ThreadPoolExecutor() as executor:
+            for opusFile in opusFiles:
+                inputPath = os.path.join(inputFolder, opusFile)
+                outputPath = os.path.join(outputFolder, os.path.splitext(opusFile)[0] + '.mp3')
+                future = executor.submit(self.convertOpusToMp3, inputPath, outputPath)
+                future.add_done_callback(lambda x: self.updateProgress(progressCallback))
+
+    def updateProgress(self, progressCallback):
+        self.convertedFiles += 1
+        progress = int((self.convertedFiles / self.totalFiles) * 100)
+        progressCallback.emit(progress)
+
+class ConverterGUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.converter = OpusToMp3Converter()
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle('Opus to MP3 Converter')
+        self.setGeometry(100, 100, 400, 300)
+
+        layout = QVBoxLayout()
+
+        inputLayout = QHBoxLayout()
+        self.inputEdit = QLineEdit()
+        inputButton = QPushButton('Input Folder')
+        inputButton.clicked.connect(self.selectInputFolder)
+        inputLayout.addWidget(self.inputEdit)
+        inputLayout.addWidget(inputButton)
+
+        outputLayout = QHBoxLayout()
+        self.outputEdit = QLineEdit()
+        outputButton = QPushButton('Output Folder')
+        outputButton.clicked.connect(self.selectOutputFolder)
+        outputLayout.addWidget(self.outputEdit)
+        outputLayout.addWidget(outputButton)
+
+        self.convertButton = QPushButton('Convert')
+        self.convertButton.clicked.connect(self.startConversion)
+
+        self.progressBar = QProgressBar()
+        self.logText = QTextEdit()
+        self.logText.setReadOnly(True)
+
+        layout.addLayout(inputLayout)
+        layout.addLayout(outputLayout)
+        layout.addWidget(self.convertButton)
+        layout.addWidget(self.progressBar)
+        layout.addWidget(self.logText)
+
+        self.setLayout(layout)
+
+    def selectInputFolder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Input Folder")
+        if folder:
+            self.inputEdit.setText(folder)
+
+    def selectOutputFolder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+        if folder:
+            self.outputEdit.setText(folder)
+
+    def startConversion(self):
+        inputFolder = self.inputEdit.text()
+        outputFolder = self.outputEdit.text()
+
+        if not inputFolder or not outputFolder:
+            self.logText.append("Please select both input and output folders.")
+            return
+
+        self.convertButton.setEnabled(False)
+        self.progressBar.setValue(0)
+        self.logText.clear()
+
+        self.worker = ConversionWorker(self.converter, inputFolder, outputFolder)
+        self.worker.updateProgress.connect(self.updateProgress)
+        self.worker.conversionComplete.connect(self.conversionComplete)
+        self.worker.start()
+
+    def updateProgress(self, value):
+        self.progressBar.setValue(value)
+        self.logText.append(f"Converted {self.converter.convertedFiles} out of {self.converter.totalFiles} files.")
+
+    def conversionComplete(self):
+        self.convertButton.setEnabled(True)
+        self.logText.append("Conversion complete!")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    gui = ConverterGUI()
+    gui.show()
+    sys.exit(app.exec())
